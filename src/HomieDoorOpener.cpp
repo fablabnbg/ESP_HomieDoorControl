@@ -17,7 +17,8 @@
 HomieDoorOpener::HomieDoorOpener(uint8_t _pinBuzzer, uint8_t _pinLEDOK, uint8_t _pinLEDFAIL, uint8_t _pinDoorState):
 HomieNode("door", "Dooropener", "dooropener"),
 pinBuzzer(_pinBuzzer), pinLEDOK(_pinLEDOK), pinLEDFAIL(_pinLEDFAIL), //pinDoorState(_pinDoorState),
-cardreader(D4, D3)
+cardreader(D4, D3),
+masterKey(0xFFFF)
 {
 	advertise("reader").setDatatype("int32").setName("Read ID");
 	advertise("allow").setDatatype("int32").settable();
@@ -40,7 +41,8 @@ void HomieDoorOpener::setup() {
 	ledFail.begin(pinLEDFAIL, true);
 	ledFail.blink(500).start();
 
-	timer_buz.trace(Serial).begin(ATM_TIMER_OFF);
+	timer_buz.begin(ATM_TIMER_OFF);//.trace(Serial);
+	timer_prog.trace(Serial).begin(ATM_TIMER_OFF);
 
 	setRunLoopDisconnected(true);
 	bool rc=readJSONAllowedUsers();
@@ -69,21 +71,40 @@ void HomieDoorOpener::loop() {
 			}
 			setProperty("reader").send(String(uid));
 
-			bool access = false;
-			for (uint_fast8_t i = 0; i<sizeof(allowedUIDS); i++) {
-				if (uid == allowedUIDS[i]) {
-					access=true;
-					break;
+			if (uid == masterKey) {
+				LN.logf("HomieDoorOpener", LoggerNode::INFO, "Master key read - enable programming mode");
+				if (timer_prog.state() != Atm_timer::IDLE) {
+					// already active
+					timer_prog.stop();
+					ledFail.off();
+				} else {
+					ledFail.blink(1000).start();
+					timer_prog.begin(10000,1).onFinish(ledFail, Atm_led::EVT_OFF).start();
 				}
-			}
-			if (access) {
-				Serial.println("Access granted");
-				buzzer.on();
-				timer_buz.begin(5000, 1).onFinish(buzzer, Atm_bit::EVT_OFF).start();
 			} else {
-				Serial.println("Access denied");
-				ledFail.blink(100, 200, 3).start();
-				buzzer.off();
+				bool access = false;
+				Serial.println(access ? "Access true" : "Access false");
+				Serial.println(uid);
+				for (uint_fast8_t i = 0; i < sizeof(allowedUIDS); i++) {
+					if (allowedUIDS[i] == 0)
+						break; // 0 is invalid - and array is pre-initialized with 0, so 0 means that last valid UID has already been read
+					Serial.println(access ? "Access true" : "Access false");
+					if (uid == allowedUIDS[i]) {
+						access = true;
+						break;
+					}
+				}
+				Serial.println(access ? "Access true" : "Access false");
+				Serial.println(uid);
+				if (access) {
+					Serial.println("Access granted");
+					buzzer.on();
+					timer_buz.begin(5000, 1).onFinish(buzzer, Atm_bit::EVT_OFF).start();
+				} else {
+					Serial.println("Access denied");
+					ledFail.blink(100, 200, 3).start();
+					buzzer.off();
+				}
 			}
 		} else {
 			LN.logf("HomieDoorOpener", LoggerNode::DEBUG, "Cannot read card"); // Level DEBUG, because it is quite normal to have incomplete reads. So this is not an error situation.
@@ -128,11 +149,15 @@ bool HomieDoorOpener::readJSONAllowedUsers() {
 		LN.logf("JSONReader", LoggerNode::ERROR, "Cannot parse user database");
 		return false;
 	}
+
+	masterKey = root["masterkey"];
 	JsonArray& allowedUsers = root["allowed_users"];
 	if (!allowedUsers.copyTo(allowedUIDS, sizeof(allowedUIDS))) {
 		LN.logf("JSONReader", LoggerNode::ERROR, "Cannot copy user database");
 		return false;
 	}
+	Serial.print("Masterkey: ");
+	Serial.println(masterKey);
 	Serial.println("Allowed users:");
 	for (uint_fast8_t i = 0; i<sizeof(allowedUIDS); i++) {
 		Serial.print('\t');

@@ -39,8 +39,10 @@ private:
     MFRC522 cardreader;
 
     Atm_timer timer_buz;
+    Atm_timer timer_prog;
 
     uint32_t allowedUIDS[255];
+    uint32_t masterKey;
 };
 
 #endif /* SRC_HOMIEDOOROPENER_H_ */
