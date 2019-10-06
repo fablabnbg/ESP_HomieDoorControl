@@ -18,74 +18,95 @@ HomieDoorOpener::HomieDoorOpener(uint8_t _pinBuzzer, uint8_t _pinLEDOK, uint8_t 
 HomieNode("door", "Dooropener", "dooropener"),
 pinBuzzer(_pinBuzzer), pinLEDOK(_pinLEDOK), pinLEDFAIL(_pinLEDFAIL), //pinDoorState(_pinDoorState),
 cardreader(D4, D3),
+allowedUIDSCount(0),
 masterKey(0xFFFF)
 {
 	advertise("reader").setDatatype("int32").setName("Read ID");
 	advertise("allow").setDatatype("int32").settable();
 	advertise("deny").setDatatype("int32").settable();
-	advertise("doorstate");
-	advertise("override_open").setDatatype("bool").settable();
+	advertise("doorstate").setName("Zustand Tür").setDatatype("enum").setFormat("CLOSED, OPEN_CARD, OPEN_REMOTE, OPEN_LONG");
+	advertise("override_open").setName("Tür manuell dauerhaft öffnen").setDatatype("bool").settable();
+	advertise("opendoor").setName("Türöffner betätigen").setDatatype("bool").settable();
 }
 
 void HomieDoorOpener::setup() {
+	// Initialize Card Reader
 	SPI.begin();				// Init SPI with default values
 	cardreader.PCD_Init();		// Init MFRC522
 	cardreader.PCD_DumpVersionToSerial();	// Show details of PCD - MFRC522 Card Reader details
 
 
+	// uncomment to activate additional debug-output on Serial for LED/buzzer states
 	//buzzer.trace(Serial).begin(pinDoorState);
-//	ledOK.trace(Serial).begin(pinLEDOK, true);
-//	ledFail.trace(Serial).begin(pinLEDFAIL, false);
-	buzzer.begin(Atm_bit::OFF).onChange(true, ledOK, Atm_led::EVT_ON).onChange(false, ledOK, Atm_led::EVT_OFF).off();
-	ledOK.begin(pinLEDOK, true);
-	ledFail.begin(pinLEDFAIL, true);
-	ledFail.blink(500).start();
+    //ledOK.trace(Serial).begin(pinLEDOK, true);
+    //ledFail.trace(Serial).begin(pinLEDFAIL, false);
 
+	// Switch door-opener ("buzzer") off and connect its event to the "OK" led, so it represents the  buzzer's state.
+	buzzer.begin(Atm_bit::OFF).onChange(true, ledOK, Atm_led::EVT_ON).onChange(false, ledOK, Atm_led::EVT_OFF).off();
+	//initialize buzzer timmer
 	timer_buz.begin(ATM_TIMER_OFF);//.trace(Serial);
 	timer_prog.trace(Serial).begin(ATM_TIMER_OFF);
 
+	// LEDs are active-low
+	ledOK.begin(pinLEDOK, true);
+	ledFail.begin(pinLEDFAIL, true);
+
+	// Start blinking on FAIL-led, because we are not connected yet.
+	ledFail.blink(500).start();
+
+
+	timer_prog.begin(ProgTimer).onFinish(ledFail, Atm_led::EVT_OFF);
+
+
+	// run Homie-loop also, if not connected to MQTT
 	setRunLoopDisconnected(true);
-	bool rc=readJSONAllowedUsers();
+
+	/// read allowed UIDs from Config-File
+	readJSONAllowedUsers();
 }
 
 void HomieDoorOpener::onReadyToOperate() {
-	ledOK.blink(2000,0,1).start();
-	ledFail.off();
+	ledOK.blink(2000,0,1).start(); // one long green Pulse after connection to MQTT has been established
+	ledFail.off(); // FAIL-led can be switched off now
 }
 
+
+// main loop
 void HomieDoorOpener::loop() {
-	automaton.run();
+	automaton.run(); // update automaton objects
+
 	if (cardreader.PICC_IsNewCardPresent()) {
 		Serial.println("New Card!");
-		// Select one of the cards
-		if (cardreader.PICC_ReadCardSerial()) {
+
+		if (cardreader.PICC_ReadCardSerial()) { // Select one of the cards and reads it (lower 4 byte) ID
 			uint32_t uid = static_cast<uint32_t>(cardreader.uid.uidByte[0] << 24
 					| cardreader.uid.uidByte[1] << 16 | cardreader.uid.uidByte[2] << 8
 					| cardreader.uid.uidByte[3]);
+
 			LN.logf("HomieDoorOpener", LoggerNode::DEBUG, "Read new card with uid %x (%d).", uid, uid);
 
 			// Set card to halt so it is not detected again
 			MFRC522::StatusCode rc = cardreader.PICC_HaltA();
 			if (rc != MFRC522::STATUS_OK) {
-				Serial.printf("Warning: Cannot set card to halt state [Error %x]", rc);
+				LN.logf("HomieDoorOpener", LoggerNode::WARNING, "Warning: Cannot set card to halt state [Error %x]", rc);
 			}
-			setProperty("reader").send(String(uid));
+
+			setProperty("reader").send(String(uid));  // send read UID to MQTT
+
 
 			if (uid == masterKey) {
-				LN.logf("HomieDoorOpener", LoggerNode::INFO, "Master key read - enable programming mode");
-				if (timer_prog.state() != Atm_timer::IDLE) {
-					// already active
-					timer_prog.stop();
-					ledFail.off();
-				} else {
-					ledFail.blink(1000).start();
-					timer_prog.begin(10000,1).onFinish(ledFail, Atm_led::EVT_OFF).start();
-				}
+				LN.logf("HomieDoorOpener", LoggerNode::INFO, "Master key read - togglerogramming mode");
+				ledFail.blink(1000).start();
+				timer_prog.toggle();
+
 			} else {
+
+				bool progModeActive = (timer_prog.state() != Atm_timer::IDLE);
+
 				bool access = false;
 				Serial.println(access ? "Access true" : "Access false");
 				Serial.println(uid);
-				for (uint_fast8_t i = 0; i < sizeof(allowedUIDS); i++) {
+				for (uint_fast8_t i = 0; i < MaxUsers; i++) {
 					if (allowedUIDS[i] == 0)
 						break; // 0 is invalid - and array is pre-initialized with 0, so 0 means that last valid UID has already been read
 					Serial.println(access ? "Access true" : "Access false");
@@ -101,9 +122,18 @@ void HomieDoorOpener::loop() {
 					buzzer.on();
 					timer_buz.begin(5000, 1).onFinish(buzzer, Atm_bit::EVT_OFF).start();
 				} else {
-					Serial.println("Access denied");
-					ledFail.blink(100, 200, 3).start();
-					buzzer.off();
+					if (progModeActive) {
+						LN.logf("HomieDoorOpener", LoggerNode::INFO, "Adding UID %d to list of allowed UIDs", uid);
+						if (!addUser(uid)) {
+							LN.log("HomieDoorOpener", LoggerNode::ERROR, "Cannot add UID to list of allowed users. Table full?");
+						}
+						ledOK.blink(500,0,1);
+						timer_prog.start();	// extend timer
+					} else {
+						Serial.println("Access denied");
+						ledFail.blink(100, 200, 3).start();
+						buzzer.off();
+					}
 				}
 			}
 		} else {
@@ -117,7 +147,7 @@ bool HomieDoorOpener::handleInput(const HomieRange &range, const String &propert
 		//add to database
 	} else if (property.equals("deny")) {
 		// remove from database)
-	} 	else if (property.equals("overrid_open")) {
+	} 	else if (property.equals("override_open")) {
 		// Open Door
 		bool open = value.equalsIgnoreCase("true");
 		if (open) buzzer.on(); else buzzer.off();
@@ -135,36 +165,115 @@ bool HomieDoorOpener::readJSONAllowedUsers() {
 		LN.logf("JSONReader", LoggerNode::ERROR, "Cannot find user database");
 		return false;
 	}
-	DynamicJsonBuffer jsonBuffer(JSON_ARRAY_SIZE(10) + JSON_OBJECT_SIZE(1) + 50 );
 	File file = SPIFFS.open("/data/access.json", "r");
 	if (!file) {
 		LN.logf("JSONReader", LoggerNode::ERROR, "Cannot read user database");
 		return false;
 	}
 
-	JsonObject &root = jsonBuffer.parseObject(file);
+	DynamicJsonDocument  jsonDoc(JSON_ARRAY_SIZE(100) + JSON_OBJECT_SIZE(1) + 50 );
+    DeserializationError error = deserializeJson(jsonDoc, file);
 	file.close();
 
-	if (!root.success()) {
+	if (error) {
 		LN.logf("JSONReader", LoggerNode::ERROR, "Cannot parse user database");
 		return false;
 	}
 
-	masterKey = root["masterkey"];
-	JsonArray& allowedUsers = root["allowed_users"];
-	if (!allowedUsers.copyTo(allowedUIDS, sizeof(allowedUIDS))) {
+	masterKey = jsonDoc["masterkey"];
+	JsonArray allowedUsers = jsonDoc["allowed_users"];
+	if (!copyArray(allowedUsers, allowedUIDS)) {
 		LN.logf("JSONReader", LoggerNode::ERROR, "Cannot copy user database");
 		return false;
 	}
 	Serial.print("Masterkey: ");
 	Serial.println(masterKey);
 	Serial.println("Allowed users:");
-	for (uint_fast8_t i = 0; i<sizeof(allowedUIDS); i++) {
+	for (uint_fast8_t i = 0; i < MaxUsers; i++) {
 		Serial.print('\t');
 		Serial.println(allowedUIDS[i]);
-		if (!allowedUIDS[i]) break;
+		if (!allowedUIDS[i]) {
+			allowedUIDSCount = i;
+			break;
+		}
 	}
 
 	return true;
 
 }
+
+bool HomieDoorOpener::addUser(uint32_t uid) {
+	Serial.printf("Allowed users [%d]:\n", allowedUIDSCount);
+	for (uint_fast8_t i = 0; i < allowedUIDSCount; i++) {
+		Serial.print('\t');
+		Serial.println(allowedUIDS[i]);
+	}
+	if (allowedUIDSCount >= sizeof(allowedUIDS)/sizeof(uint32_t)) {
+		LN.log("addUser", LoggerNode::ERROR, "No more space for new users!");
+		return false;
+	}
+	allowedUIDS[allowedUIDSCount++] = uid;
+
+	Serial.printf("Allowed users [%d]:\n", allowedUIDSCount);
+	for (uint_fast8_t i = 0; i< allowedUIDSCount; i++) {
+		Serial.print('\t');
+		Serial.println(allowedUIDS[i]);
+	}
+
+	return writeJSONFile();
+
+
+}
+
+bool HomieDoorOpener::removeUser(uint32_t uid) {
+	Serial.printf("Allowed users [%d]:\n", allowedUIDSCount);
+	for (uint_fast8_t i = 0; i< allowedUIDSCount ; i++) {
+		Serial.print('\t');
+		Serial.println(allowedUIDS[i]);
+	}
+	for (uint_fast8_t i = 0; i < allowedUIDSCount ; i++ ) {
+		//TODO: Implement
+
+	}
+
+
+	Serial.printf("Allowed users [%d]:\n", allowedUIDSCount);
+	for (uint_fast8_t i = 0; i < MaxUsers; i++) {
+		Serial.print('\t');
+		Serial.println(allowedUIDS[i]);
+	}
+
+	return true;
+
+}
+
+bool HomieDoorOpener::writeJSONFile() {
+	DynamicJsonDocument  jsonDoc(JSON_ARRAY_SIZE(10) + JSON_OBJECT_SIZE(1) + 50 );
+
+	JsonArray js_user = jsonDoc.createNestedArray("allowed_users");
+	for (uint_fast8_t i = 0; i < MaxUsers ; i++) {
+		if (!allowedUIDS[i]) break;
+		js_user.add(allowedUIDS[i]);
+	}
+	jsonDoc["masterkey"] = masterKey;
+	serializeJsonPretty(jsonDoc, Serial);
+	Serial.print('\n');
+	serializeJson(jsonDoc, Serial);
+	Serial.print('\n');
+
+	File file = SPIFFS.open("/data/access.json", "w");
+	if (!file) {
+		LN.logf("addUsertoJSON", LoggerNode::ERROR, "Cannot open user database for writing");
+		return false;
+	}
+	if (serializeJson(jsonDoc, file) == 0) {
+		LN.logf("addUsertoJSON", LoggerNode::ERROR, "Failed to write to file");
+		file.close();
+		return false;
+	}
+	file.flush();
+	file.close();
+	return true;
+}
+
+

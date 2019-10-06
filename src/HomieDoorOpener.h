@@ -27,6 +27,9 @@ protected:
 
 private:
 	bool readJSONAllowedUsers();
+	bool addUser(uint32_t uid);
+	bool removeUser(uint32_t uid);
+	bool writeJSONFile();
 	uint8_t pinBuzzer;
 	uint8_t pinLEDOK;
 	uint8_t pinLEDFAIL;
@@ -39,9 +42,14 @@ private:
     MFRC522 cardreader;
 
     Atm_timer timer_buz;
+
+    static const uint_fast8_t ProgTimer = 10000;
     Atm_timer timer_prog;
 
-    uint32_t allowedUIDS[255];
+
+    static const uint_fast8_t MaxUsers = 200;
+    uint32_t allowedUIDS[MaxUsers];
+    uint_fast8_t allowedUIDSCount;
     uint32_t masterKey;
 };
 
