@@ -171,15 +171,21 @@ bool HomieDoorOpener::readJSONAllowedUsers() {
 		return false;
 	}
 
+	String buffer;
+	while (file.available()) {
+		buffer = file.readStringUntil('\n');
+		Serial.println(buffer); //Printing for debugging purpose
+	}
+	file.seek(0);
+
 	DynamicJsonDocument  jsonDoc(JSON_ARRAY_SIZE(100) + JSON_OBJECT_SIZE(1) + 50 );
     DeserializationError error = deserializeJson(jsonDoc, file);
-	file.close();
+    file.close();
 
 	if (error) {
-		LN.logf("JSONReader", LoggerNode::ERROR, "Cannot parse user database");
+		LN.logf("JSONReader", LoggerNode::ERROR, "Cannot parse user database [error: %x]", error);
 		return false;
 	}
-
 	masterKey = jsonDoc["masterkey"];
 	JsonArray allowedUsers = jsonDoc["allowed_users"];
 	if (!copyArray(allowedUsers, allowedUIDS)) {
@@ -258,20 +264,30 @@ bool HomieDoorOpener::writeJSONFile() {
 	jsonDoc["masterkey"] = masterKey;
 	serializeJsonPretty(jsonDoc, Serial);
 	Serial.print('\n');
-	serializeJson(jsonDoc, Serial);
-	Serial.print('\n');
 
+//	if (serializeJson(jsonDoc, file) == 0) {
+//		LN.logf("addUsertoJSON", LoggerNode::ERROR, "Failed to write to file");
+//		file.close();
+//		return false;
+//	}
+
+	String jsbuffer;
+	serializeJson(jsonDoc, jsbuffer);
+	SPIFFS.begin();
 	File file = SPIFFS.open("/data/access.json", "w");
 	if (!file) {
 		LN.logf("addUsertoJSON", LoggerNode::ERROR, "Cannot open user database for writing");
 		return false;
 	}
-	if (serializeJson(jsonDoc, file) == 0) {
-		LN.logf("addUsertoJSON", LoggerNode::ERROR, "Failed to write to file");
-		file.close();
-		return false;
+	file.print(jsbuffer.c_str());
+	Serial.println(jsbuffer.c_str());
+
+	String buffer;
+	file.seek(0);
+	while (file.available()) {
+		buffer = file.readStringUntil('\n');
+		Serial.println(buffer); //Printing for debugging purpose
 	}
-	file.flush();
 	file.close();
 	return true;
 }
