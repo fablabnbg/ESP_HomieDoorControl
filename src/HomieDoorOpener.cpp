@@ -161,6 +161,17 @@ bool HomieDoorOpener::readJSONAllowedUsers() {
 		return false;
 	}
 
+	/* DEBUG-Code */
+	String buffer;
+	if(SPIFFS.exists("/data/test.json")) {
+		File testfile = SPIFFS.open("/data/test.json", "r");
+		while (testfile.available()) {
+			buffer = testfile.readStringUntil('\n');
+			Serial.println(buffer); //Printing for debugging purpose
+		}
+	}
+	/* end DEBUG-Code */
+
 	if(!SPIFFS.exists("/data/access.json")) {
 		LN.logf("JSONReader", LoggerNode::ERROR, "Cannot find user database");
 		return false;
@@ -171,7 +182,7 @@ bool HomieDoorOpener::readJSONAllowedUsers() {
 		return false;
 	}
 
-	String buffer;
+
 	while (file.available()) {
 		buffer = file.readStringUntil('\n');
 		Serial.println(buffer); //Printing for debugging purpose
@@ -209,26 +220,12 @@ bool HomieDoorOpener::readJSONAllowedUsers() {
 }
 
 bool HomieDoorOpener::addUser(uint32_t uid) {
-	Serial.printf("Allowed users [%d]:\n", allowedUIDSCount);
-	for (uint_fast8_t i = 0; i < allowedUIDSCount; i++) {
-		Serial.print('\t');
-		Serial.println(allowedUIDS[i]);
-	}
 	if (allowedUIDSCount >= sizeof(allowedUIDS)/sizeof(uint32_t)) {
 		LN.log("addUser", LoggerNode::ERROR, "No more space for new users!");
 		return false;
 	}
 	allowedUIDS[allowedUIDSCount++] = uid;
-
-	Serial.printf("Allowed users [%d]:\n", allowedUIDSCount);
-	for (uint_fast8_t i = 0; i< allowedUIDSCount; i++) {
-		Serial.print('\t');
-		Serial.println(allowedUIDS[i]);
-	}
-
 	return writeJSONFile();
-
-
 }
 
 bool HomieDoorOpener::removeUser(uint32_t uid) {
@@ -254,7 +251,7 @@ bool HomieDoorOpener::removeUser(uint32_t uid) {
 }
 
 bool HomieDoorOpener::writeJSONFile() {
-	DynamicJsonDocument  jsonDoc(JSON_ARRAY_SIZE(10) + JSON_OBJECT_SIZE(1) + 50 );
+	DynamicJsonDocument  jsonDoc(JSON_ARRAY_SIZE(MaxUsers) + JSON_OBJECT_SIZE(1) + 50 );
 
 	JsonArray js_user = jsonDoc.createNestedArray("allowed_users");
 	for (uint_fast8_t i = 0; i < MaxUsers ; i++) {
@@ -265,31 +262,23 @@ bool HomieDoorOpener::writeJSONFile() {
 	serializeJsonPretty(jsonDoc, Serial);
 	Serial.print('\n');
 
-//	if (serializeJson(jsonDoc, file) == 0) {
-//		LN.logf("addUsertoJSON", LoggerNode::ERROR, "Failed to write to file");
-//		file.close();
-//		return false;
-//	}
+	/* DEBUG-Code */
+	File testfile = SPIFFS.open("/data/test.json", "w");
+	size_t rc_test = testfile.print("Test!\nTest 2!");
+	Serial.printf("Wrote %d byte to JSON-Configfile.\n", rc_test);
+	testfile.close();
+	/* end DEBUG-Code */
 
-	String jsbuffer;
-	serializeJson(jsonDoc, jsbuffer);
-	SPIFFS.begin();
+
 	File file = SPIFFS.open("/data/access.json", "w");
 	if (!file) {
 		LN.logf("addUsertoJSON", LoggerNode::ERROR, "Cannot open user database for writing");
 		return false;
 	}
-	file.print(jsbuffer.c_str());
-	Serial.println(jsbuffer.c_str());
-
-	String buffer;
-	file.seek(0);
-	while (file.available()) {
-		buffer = file.readStringUntil('\n');
-		Serial.println(buffer); //Printing for debugging purpose
-	}
+	size_t rc = serializeJson(jsonDoc, file);
 	file.close();
-	return true;
+	Serial.printf("Wrote %d byte to JSON-Configfile.\n", rc);
+	return (rc > 0);
 }
 
 
