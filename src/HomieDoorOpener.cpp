@@ -95,7 +95,7 @@ void HomieDoorOpener::loop() {
 
 
 			if (uid == masterKey) {
-				LN.logf("HomieDoorOpener", LoggerNode::INFO, "Master key read - togglerogramming mode");
+				LN.log("HomieDoorOpener", LoggerNode::INFO, "Master key read - toggle programming mode");
 				ledFail.blink(1000).start();
 				timer_prog.toggle();
 
@@ -104,23 +104,17 @@ void HomieDoorOpener::loop() {
 				bool progModeActive = (timer_prog.state() != Atm_timer::IDLE);
 
 				bool access = false;
-				Serial.println(access ? "Access true" : "Access false");
-				Serial.println(uid);
 				for (uint_fast8_t i = 0; i < MaxUsers; i++) {
 					if (allowedUIDS[i] == 0)
 						break; // 0 is invalid - and array is pre-initialized with 0, so 0 means that last valid UID has already been read
-					Serial.println(access ? "Access true" : "Access false");
 					if (uid == allowedUIDS[i]) {
 						access = true;
 						break;
 					}
 				}
-				Serial.println(access ? "Access true" : "Access false");
-				Serial.println(uid);
 				if (access) {
-					Serial.println("Access granted");
-					buzzer.on();
-					timer_buz.begin(5000, 1).onFinish(buzzer, Atm_bit::EVT_OFF).start();
+					LN.log("HomieDoorOpener", LoggerNode::DEBUG, "ID ok - toggling buzzer");
+					buzzer.toggle();
 				} else {
 					if (progModeActive) {
 						LN.logf("HomieDoorOpener", LoggerNode::INFO, "Adding UID %d to list of allowed UIDs", uid);
@@ -137,20 +131,33 @@ void HomieDoorOpener::loop() {
 				}
 			}
 		} else {
-			LN.logf("HomieDoorOpener", LoggerNode::DEBUG, "Cannot read card"); // Level DEBUG, because it is quite normal to have incomplete reads. So this is not an error situation.
+			LN.log("HomieDoorOpener", LoggerNode::DEBUG, "Cannot read card"); // Level DEBUG, because it is quite normal to have incomplete reads. So this is not an error situation.
 		}
 	}
 }
 
 bool HomieDoorOpener::handleInput(const HomieRange &range, const String &property, const String &value) {
 	if (property.equals("allow")) {
-		//add to database
+		uint32_t uid = value.toInt();
+		if (uid > 0) addUser(uid);
+		setProperty("allow").send(String(uid));
+		return true;
 	} else if (property.equals("deny")) {
 		// remove from database)
+		return true;
 	} 	else if (property.equals("override_open")) {
-		// Open Door
 		bool open = value.equalsIgnoreCase("true");
 		if (open) buzzer.on(); else buzzer.off();
+		return true;
+	} else if (property.equals("opendoor")) {
+		// If buzzer is switched off and requested top open, open it and start timer to close it.
+		// (if it is already open, nothing is done, so it stays open and no timer is started)
+		if (buzzer.state() == Atm_bit::OFF && value.equalsIgnoreCase("true")) {
+			buzzer.on();
+			timer_buz.begin(5000).start().onFinish(buzzer, Atm_bit::EVT_OFF);
+		}
+		setProperty("opendoor").send(buzzer.state() == Atm_bit::ON ? "true" : "false");
+		return true;
 	}
 	return false;
 }
@@ -238,8 +245,6 @@ bool HomieDoorOpener::removeUser(uint32_t uid) {
 		//TODO: Implement
 
 	}
-
-
 	Serial.printf("Allowed users [%d]:\n", allowedUIDSCount);
 	for (uint_fast8_t i = 0; i < MaxUsers; i++) {
 		Serial.print('\t');
