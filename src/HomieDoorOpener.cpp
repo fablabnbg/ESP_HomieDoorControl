@@ -14,9 +14,9 @@
 #include <ArduinoJson.h>
 
 
-HomieDoorOpener::HomieDoorOpener(uint8_t _pinBuzzer, uint8_t _pinLEDOK, uint8_t _pinLEDFAIL, uint8_t _pinDoorState):
+HomieDoorOpener::HomieDoorOpener(uint8_t _pinLEDOK, uint8_t _pinLEDFAIL):
 HomieNode("door", "Dooropener", "dooropener"),
-pinBuzzer(_pinBuzzer), pinLEDOK(_pinLEDOK), pinLEDFAIL(_pinLEDFAIL), //pinDoorState(_pinDoorState),
+pinLEDOK(_pinLEDOK), pinLEDFAIL(_pinLEDFAIL), //pinDoorState(_pinDoorState),
 cardreader(D4, D3),
 allowedUIDSCount(0),
 masterKey(0xFFFF)
@@ -24,9 +24,9 @@ masterKey(0xFFFF)
 	advertise("reader").setDatatype("int32").setName("Read ID");
 	advertise("allow").setDatatype("int32").settable();
 	advertise("deny").setDatatype("int32").settable();
-	advertise("doorstate").setName("Zustand Tür").setDatatype("enum").setFormat("CLOSED, OPEN_CARD, OPEN_REMOTE, OPEN_LONG");
-	advertise("override_open").setName("Tür manuell dauerhaft öffnen").setDatatype("bool").settable();
-	advertise("opendoor").setName("Türöffner betätigen").setDatatype("bool").settable();
+	//advertise("doorstate").setName("Zustand Tür").setDatatype("enum").setFormat("CLOSED, OPEN_CARD, OPEN_REMOTE, OPEN_LONG");
+	advertise("override_open").setName("Tür dauerhaft öffnen").setDatatype("bool").settable();
+	advertise("opendoor").setName("Türöffner kurz betätigen").setDatatype("bool").settable();
 }
 
 void HomieDoorOpener::setup() {
@@ -42,7 +42,7 @@ void HomieDoorOpener::setup() {
     //ledFail.trace(Serial).begin(pinLEDFAIL, false);
 
 	// Switch door-opener ("buzzer") off and connect its event to the "OK" led, so it represents the  buzzer's state.
-	buzzer.begin(Atm_bit::OFF).onChange(true, ledOK, Atm_led::EVT_ON).onChange(false, ledOK, Atm_led::EVT_OFF).off();
+	buzzer.begin(false).onChange(true, ledOK, Atm_led::EVT_ON).onChange(false, ledOK, Atm_led::EVT_OFF).off();
 	//initialize buzzer timmer
 	timer_buz.begin(ATM_TIMER_OFF);//.trace(Serial);
 	timer_prog.trace(Serial).begin(ATM_TIMER_OFF);
@@ -66,7 +66,6 @@ void HomieDoorOpener::setup() {
 }
 
 void HomieDoorOpener::onReadyToOperate() {
-	ledOK.blink(2000,0,1).start(); // one long green Pulse after connection to MQTT has been established
 	ledFail.off(); // FAIL-led can be switched off now
 }
 
@@ -74,10 +73,8 @@ void HomieDoorOpener::onReadyToOperate() {
 // main loop
 void HomieDoorOpener::loop() {
 	automaton.run(); // update automaton objects
-
 	if (cardreader.PICC_IsNewCardPresent()) {
 		Serial.println("New Card!");
-
 		if (cardreader.PICC_ReadCardSerial()) { // Select one of the cards and reads it (lower 4 byte) ID
 			uint32_t uid = static_cast<uint32_t>(cardreader.uid.uidByte[0] << 24
 					| cardreader.uid.uidByte[1] << 16 | cardreader.uid.uidByte[2] << 8
@@ -96,13 +93,11 @@ void HomieDoorOpener::loop() {
 
 			if (uid == masterKey) {
 				LN.log("HomieDoorOpener", LoggerNode::INFO, "Master key read - toggle programming mode");
-				ledFail.blink(1000).start();
+				ledFail.blink(1500, 500).start();
 				timer_prog.toggle();
 
 			} else {
-
 				bool progModeActive = (timer_prog.state() != Atm_timer::IDLE);
-
 				bool access = false;
 				for (uint_fast8_t i = 0; i < MaxUsers; i++) {
 					if (allowedUIDS[i] == 0)
@@ -112,22 +107,31 @@ void HomieDoorOpener::loop() {
 						break;
 					}
 				}
-				if (access) {
-					LN.log("HomieDoorOpener", LoggerNode::DEBUG, "ID ok - toggling buzzer");
-					buzzer.toggle();
-				} else {
-					if (progModeActive) {
+				if (progModeActive) {
+					if (access) {
+						LN.logf("HomieDoorOpener", LoggerNode::INFO, "Removing UID %d to list of allowed UIDs", uid);
+						if (removeUser(uid)) {
+							setProperty("deny").send(String(uid));
+						} else {
+							LN.log("HomieDoorOpener", LoggerNode::ERROR, "Cannot remove UID to list of allowed users.");
+						}
+					} else {
 						LN.logf("HomieDoorOpener", LoggerNode::INFO, "Adding UID %d to list of allowed UIDs", uid);
-						if (!addUser(uid)) {
+						if (addUser(uid)) {
+							setProperty("allow").send(String(uid));
+						} else {
 							LN.log("HomieDoorOpener", LoggerNode::ERROR, "Cannot add UID to list of allowed users. Table full?");
 						}
-						ledOK.blink(500,0,1);
-						timer_prog.start();	// extend timer
-					} else {
-						Serial.println("Access denied");
-						ledFail.blink(100, 200, 3).start();
-						buzzer.off();
 					}
+					ledOK.blink(500, 500, 1);
+					timer_prog.start();	// extend timer
+				} else if (access) {
+					LN.log("HomieDoorOpener", LoggerNode::DEBUG, "ID ok - toggling buzzer");
+					buzzer.toggle();
+					setProperty("opendoor").send(buzzer.state() == Atm_bit::ON ? "true" : "false");
+				} else {
+					Serial.println("Access denied");
+					ledFail.blink(100, 200, 3).start();
 				}
 			}
 		} else {
@@ -137,13 +141,12 @@ void HomieDoorOpener::loop() {
 }
 
 bool HomieDoorOpener::handleInput(const HomieRange &range, const String &property, const String &value) {
+	uint32_t uid = value.toInt();
 	if (property.equals("allow")) {
-		uint32_t uid = value.toInt();
-		if (uid > 0) addUser(uid);
-		setProperty("allow").send(String(uid));
+		if ((uid > 0) && addUser(uid)) setProperty("allow").send(String(uid));
 		return true;
 	} else if (property.equals("deny")) {
-		// remove from database)
+		if ((uid > 0) && removeUser(uid)) setProperty("deny").send(String(uid));
 		return true;
 	} 	else if (property.equals("override_open")) {
 		bool open = value.equalsIgnoreCase("true");
@@ -168,16 +171,7 @@ bool HomieDoorOpener::readJSONAllowedUsers() {
 		return false;
 	}
 
-	/* DEBUG-Code */
 	String buffer;
-	if(SPIFFS.exists("/data/test.json")) {
-		File testfile = SPIFFS.open("/data/test.json", "r");
-		while (testfile.available()) {
-			buffer = testfile.readStringUntil('\n');
-			Serial.println(buffer); //Printing for debugging purpose
-		}
-	}
-	/* end DEBUG-Code */
 
 	if(!SPIFFS.exists("/data/access.json")) {
 		LN.logf("JSONReader", LoggerNode::ERROR, "Cannot find user database");
@@ -227,7 +221,7 @@ bool HomieDoorOpener::readJSONAllowedUsers() {
 }
 
 bool HomieDoorOpener::addUser(uint32_t uid) {
-	if (allowedUIDSCount >= sizeof(allowedUIDS)/sizeof(uint32_t)) {
+	if (allowedUIDSCount >= MaxUsers) {
 		LN.log("addUser", LoggerNode::ERROR, "No more space for new users!");
 		return false;
 	}
@@ -236,23 +230,28 @@ bool HomieDoorOpener::addUser(uint32_t uid) {
 }
 
 bool HomieDoorOpener::removeUser(uint32_t uid) {
+	bool found = false;
 	Serial.printf("Allowed users [%d]:\n", allowedUIDSCount);
-	for (uint_fast8_t i = 0; i< allowedUIDSCount ; i++) {
-		Serial.print('\t');
-		Serial.println(allowedUIDS[i]);
-	}
-	for (uint_fast8_t i = 0; i < allowedUIDSCount ; i++ ) {
-		//TODO: Implement
-
+	for (uint_fast8_t i = 0; i < MaxUsers; i++ ) {
+		if (allowedUIDS[i] == 0) break;
+		if (uid == allowedUIDS[i]) {
+			LN.logf("removeUser", LoggerNode::DEBUG, "Found uid %d to remove as index %d", uid, i);
+			allowedUIDS[i] = 0; // just to make sure
+			found = true;
+			for (uint_fast8_t j = i; j <= allowedUIDSCount; j++) {
+				allowedUIDS[j] = allowedUIDS[j+1];
+			}
+			allowedUIDS[allowedUIDSCount] = 0;
+			allowedUIDSCount--;
+			break;
+		}
 	}
 	Serial.printf("Allowed users [%d]:\n", allowedUIDSCount);
-	for (uint_fast8_t i = 0; i < MaxUsers; i++) {
-		Serial.print('\t');
-		Serial.println(allowedUIDS[i]);
+	if (found) {
+		return writeJSONFile();
+	} else {
+		return false;
 	}
-
-	return true;
-
 }
 
 bool HomieDoorOpener::writeJSONFile() {
@@ -266,15 +265,6 @@ bool HomieDoorOpener::writeJSONFile() {
 	jsonDoc["masterkey"] = masterKey;
 	serializeJsonPretty(jsonDoc, Serial);
 	Serial.print('\n');
-
-	/* DEBUG-Code */
-	File testfile = SPIFFS.open("/data/test.json", "w");
-	size_t rc_test = testfile.print("Test!\nTest 2!");
-	Serial.printf("Wrote %d byte to JSON-Configfile.\n", rc_test);
-	testfile.close();
-	/* end DEBUG-Code */
-
-
 	File file = SPIFFS.open("/data/access.json", "w");
 	if (!file) {
 		LN.logf("addUsertoJSON", LoggerNode::ERROR, "Cannot open user database for writing");

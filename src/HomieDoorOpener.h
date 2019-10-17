@@ -15,7 +15,7 @@
 
 class HomieDoorOpener: public HomieNode {
 public:
-	HomieDoorOpener(uint8_t pinBuzzer, uint8_t pinLEDOK, uint8_t pinLEDFAIL, uint8_t pinDoorState);
+	HomieDoorOpener(uint8_t pinLEDOK, uint8_t pinLEDFAIL);
 
 protected:
 	virtual bool handleInput(const HomieRange &range, const String &property, const String &value) override;
@@ -30,7 +30,6 @@ private:
 	bool addUser(uint32_t uid);
 	bool removeUser(uint32_t uid);
 	bool writeJSONFile();
-	uint8_t pinBuzzer;
 	uint8_t pinLEDOK;
 	uint8_t pinLEDFAIL;
 	//uint8_t pinDoorState;
