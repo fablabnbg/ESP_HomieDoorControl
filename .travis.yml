@@ -77,7 +77,7 @@ cache:
         - "~/.platformio"
 
 env:
-    - PLATFORMIO_CI_SRC=examples/two_shutters.cpp
+    - PLATFORMIO_CI_SRC=src/main.cpp
 
 install:
     - pip install -U platformio
@@ -86,4 +86,4 @@ install:
     - platformio lib -g install https://github.com/euphi/Automaton.git#test_for_lambda
 
 script:
-    - platformio ci --lib="." --board=d1_mini
+    - platformio run -t build --board=esp07
