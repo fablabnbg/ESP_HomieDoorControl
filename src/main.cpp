@@ -9,7 +9,7 @@
 #include <Homie.hpp>
 #include <LoggerNode.h>
 #include <HomieDoorOpener.h>
-#include <Automaton.h>
+//#include <Automaton.h>
 
 #define FW_NAME "FLNDoorOpener"
 #define FW_MAJOR "0"
@@ -20,7 +20,7 @@
 
 LoggerNode LN;
 
-HomieDoorOpener doorOpener(4, 16);
+HomieDoorOpener doorOpener(4, 16, 5);
 
 void setup() {
 	Serial.begin(74880);
@@ -36,5 +36,5 @@ void setup() {
 void loop() {
 	Homie.loop();
 	delay(1);
-	automaton.run();
+	//automaton.run();
 }

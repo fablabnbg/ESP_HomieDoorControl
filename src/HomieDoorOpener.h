@@ -15,7 +15,7 @@
 
 class HomieDoorOpener: public HomieNode {
 public:
-	HomieDoorOpener(uint8_t pinLEDOK, uint8_t pinLEDFAIL);
+	HomieDoorOpener(uint8_t pinLEDOK, uint8_t pinLEDFAIL, uint8_t pinBuzzer);
 
 protected:
 	virtual bool handleInput(const HomieRange &range, const String &property, const String &value) override;
@@ -32,9 +32,10 @@ private:
 	bool writeJSONFile();
 	uint8_t pinLEDOK;
 	uint8_t pinLEDFAIL;
+	uint8_t pinBuzzer;
 	//uint8_t pinDoorState;
 
-	Atm_bit buzzer;
+	Atm_led buzzer;
 	Atm_led ledOK;
 	Atm_led ledFail;
 	//Atm_button doorOpen;
@@ -49,7 +50,7 @@ private:
     static const uint_fast8_t MaxUsers = 200;
     uint32_t allowedUIDS[MaxUsers];
     uint_fast8_t allowedUIDSCount;
-    uint32_t masterKey;
+    uint32_t masterKey[4];
 };
 
 #endif /* SRC_HOMIEDOOROPENER_H_ */

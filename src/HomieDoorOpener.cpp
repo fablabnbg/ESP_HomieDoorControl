@@ -14,12 +14,11 @@
 #include <ArduinoJson.h>
 
 
-HomieDoorOpener::HomieDoorOpener(uint8_t _pinLEDOK, uint8_t _pinLEDFAIL):
+HomieDoorOpener::HomieDoorOpener(uint8_t _pinLEDOK, uint8_t _pinLEDFAIL, uint8_t _pinBuzzer):
 HomieNode("door", "Dooropener", "dooropener"),
-pinLEDOK(_pinLEDOK), pinLEDFAIL(_pinLEDFAIL), //pinDoorState(_pinDoorState),
-cardreader(D4, D3),
-allowedUIDSCount(0),
-masterKey(0xFFFF)
+pinLEDOK(_pinLEDOK), pinLEDFAIL(_pinLEDFAIL), pinBuzzer(_pinBuzzer), //pinDoorState(_pinDoorState),
+cardreader(2, 0),
+allowedUIDSCount(0)
 {
 	advertise("reader").setDatatype("int32").setName("Read ID");
 	advertise("allow").setDatatype("int32").settable();
@@ -37,12 +36,12 @@ void HomieDoorOpener::setup() {
 
 
 	// uncomment to activate additional debug-output on Serial for LED/buzzer states
-	//buzzer.trace(Serial).begin(pinDoorState);
-    //ledOK.trace(Serial).begin(pinLEDOK, true);
+	buzzer.trace(Serial);
+    ledOK.trace(Serial);
     //ledFail.trace(Serial).begin(pinLEDFAIL, false);
 
 	// Switch door-opener ("buzzer") off and connect its event to the "OK" led, so it represents the  buzzer's state.
-	buzzer.begin(false).onChange(true, ledOK, Atm_led::EVT_ON).onChange(false, ledOK, Atm_led::EVT_OFF).off();
+	buzzer.begin(pinBuzzer, false); // .onChange(true, ledOK, Atm_led::EVT_ON).onChange(false, ledOK, Atm_led::EVT_OFF).off();
 	//initialize buzzer timmer
 	timer_buz.begin(ATM_TIMER_OFF);//.trace(Serial);
 	timer_prog.trace(Serial).begin(ATM_TIMER_OFF);
@@ -50,6 +49,9 @@ void HomieDoorOpener::setup() {
 	// LEDs are active-low
 	ledOK.begin(pinLEDOK, true);
 	ledFail.begin(pinLEDFAIL, true);
+
+	buzzer.off();
+	ledOK.off();
 
 	// Start blinking on FAIL-led, because we are not connected yet.
 	ledFail.blink(500).start();
@@ -80,7 +82,7 @@ void HomieDoorOpener::loop() {
 					| cardreader.uid.uidByte[1] << 16 | cardreader.uid.uidByte[2] << 8
 					| cardreader.uid.uidByte[3]);
 
-			LN.logf("HomieDoorOpener", LoggerNode::DEBUG, "Read new card with uid %x (%d).", uid, uid);
+			LN.logf("HomieDoorOpener", LoggerNode::DEBUG, "Read new card with uid %x (%u).", uid, uid);
 
 			// Set card to halt so it is not detected again
 			MFRC522::StatusCode rc = cardreader.PICC_HaltA();
@@ -91,12 +93,23 @@ void HomieDoorOpener::loop() {
 			setProperty("reader").send(String(uid));  // send read UID to MQTT
 
 
-			if (uid == masterKey) {
-				LN.log("HomieDoorOpener", LoggerNode::INFO, "Master key read - toggle programming mode");
-				ledFail.blink(1500, 500).start();
-				timer_prog.toggle();
+			bool progModeSet = false;
+			for (uint_fast8_t i = 0; i < 4; i++) {
+				if (uid == masterKey[i]) {
+					LN.log("HomieDoorOpener", LoggerNode::INFO, "Master key read - toggle programming mode");
+					timer_prog.toggle();
+					 if (timer_prog.state() != Atm_timer::IDLE) {
+						 ledFail.blink(950, 50).start();
+					 } else {
+						 ledFail.off();
+					 }
+					progModeSet = true;
+					break;
+				}
+				if (masterKey[i] == 0) break;
+			}
 
-			} else {
+			if (!progModeSet) {
 				bool progModeActive = (timer_prog.state() != Atm_timer::IDLE);
 				bool access = false;
 				for (uint_fast8_t i = 0; i < MaxUsers; i++) {
@@ -111,6 +124,7 @@ void HomieDoorOpener::loop() {
 					if (access) {
 						LN.logf("HomieDoorOpener", LoggerNode::INFO, "Removing UID %d to list of allowed UIDs", uid);
 						if (removeUser(uid)) {
+							ledOK.blink(100, 100, 3).start();
 							setProperty("deny").send(String(uid));
 						} else {
 							LN.log("HomieDoorOpener", LoggerNode::ERROR, "Cannot remove UID to list of allowed users.");
@@ -118,17 +132,18 @@ void HomieDoorOpener::loop() {
 					} else {
 						LN.logf("HomieDoorOpener", LoggerNode::INFO, "Adding UID %d to list of allowed UIDs", uid);
 						if (addUser(uid)) {
+							ledOK.blink(400, 200, 2).start();
 							setProperty("allow").send(String(uid));
 						} else {
 							LN.log("HomieDoorOpener", LoggerNode::ERROR, "Cannot add UID to list of allowed users. Table full?");
 						}
 					}
-					ledOK.blink(500, 500, 1);
-					timer_prog.start();	// extend timer
+					timer_prog.start();	// re-trigger timer
 				} else if (access) {
 					LN.log("HomieDoorOpener", LoggerNode::DEBUG, "ID ok - toggling buzzer");
 					buzzer.toggle();
-					setProperty("opendoor").send(buzzer.state() == Atm_bit::ON ? "true" : "false");
+					setProperty("opendoor").send(buzzer.state() == Atm_led::ON ? "true" : "false");
+					if (buzzer.state() == Atm_led::ON) ledOK.on(); else ledOK.off();
 				} else {
 					Serial.println("Access denied");
 					ledFail.blink(100, 200, 3).start();
@@ -150,16 +165,24 @@ bool HomieDoorOpener::handleInput(const HomieRange &range, const String &propert
 		return true;
 	} 	else if (property.equals("override_open")) {
 		bool open = value.equalsIgnoreCase("true");
-		if (open) buzzer.on(); else buzzer.off();
+		if (open) {
+			buzzer.on();
+			ledOK.on();
+		} else {
+			buzzer.off();
+			ledOK.off();
+		}
 		return true;
 	} else if (property.equals("opendoor")) {
 		// If buzzer is switched off and requested top open, open it and start timer to close it.
 		// (if it is already open, nothing is done, so it stays open and no timer is started)
-		if (buzzer.state() == Atm_bit::OFF && value.equalsIgnoreCase("true")) {
-			buzzer.on();
-			timer_buz.begin(5000).start().onFinish(buzzer, Atm_bit::EVT_OFF);
+		LN.logf("handleInput()", LoggerNode::DEBUG, "opendoor cmd received. Current state %x", buzzer.state());
+		if (buzzer.state() != Atm_led::ON && value.equalsIgnoreCase("true")) {
+			buzzer.blink(5000, 100, 1).onFinish(ledOK, Atm_led::EVT_OFF).start();
+			ledOK.on();
+			//timer_buz.begin(5000).start().onFinish(buzzer, Atm_bit::EVT_OFF);
 		}
-		setProperty("opendoor").send(buzzer.state() == Atm_bit::ON ? "true" : "false");
+		setProperty("opendoor").send(buzzer.state() == Atm_led::ON ? "true" : "false");
 		return true;
 	}
 	return false;
@@ -198,14 +221,21 @@ bool HomieDoorOpener::readJSONAllowedUsers() {
 		LN.logf("JSONReader", LoggerNode::ERROR, "Cannot parse user database [error: %x]", error);
 		return false;
 	}
-	masterKey = jsonDoc["masterkey"];
+	JsonArray mkeyArray = jsonDoc["masterkey"];
 	JsonArray allowedUsers = jsonDoc["allowed_users"];
-	if (!copyArray(allowedUsers, allowedUIDS)) {
-		LN.logf("JSONReader", LoggerNode::ERROR, "Cannot copy user database");
-		return false;
+	size_t mkey = copyArray(mkeyArray, masterKey, 4);
+	if (mkey == 0) {
+		LN.logf("JSONReader", LoggerNode::ERROR, "Cannot copy master keys");
 	}
-	Serial.print("Masterkey: ");
-	Serial.println(masterKey);
+	size_t uidc = copyArray(allowedUsers, allowedUIDS, MaxUsers);
+	if (uidc == 0) {
+		LN.logf("JSONReader", LoggerNode::ERROR, "Cannot copy user database");
+	}
+	Serial.println("Masterkey: ");
+	for (uint_fast8_t i = 0; i < mkey ; i++) {
+		Serial.print('\t');
+		Serial.println(masterKey[i]);
+	}
 	Serial.println("Allowed users:");
 	for (uint_fast8_t i = 0; i < MaxUsers; i++) {
 		Serial.print('\t');
@@ -262,7 +292,9 @@ bool HomieDoorOpener::writeJSONFile() {
 		if (!allowedUIDS[i]) break;
 		js_user.add(allowedUIDS[i]);
 	}
-	jsonDoc["masterkey"] = masterKey;
+	JsonArray js_masters = jsonDoc.createNestedArray("masterkey");
+	copyArray(masterKey, 4, js_masters);
+
 	serializeJsonPretty(jsonDoc, Serial);
 	Serial.print('\n');
 	File file = SPIFFS.open("/data/access.json", "w");
