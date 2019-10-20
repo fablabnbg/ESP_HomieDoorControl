@@ -43,7 +43,7 @@ private:
 
     Atm_timer timer_buz;
 
-    static const uint_fast8_t ProgTimer = 10000;
+    static const uint32_t ProgTimer = 10000;
     Atm_timer timer_prog;
 
 
